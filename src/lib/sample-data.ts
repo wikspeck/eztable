@@ -123,7 +123,7 @@ export const initialStandings: StandingRow[] = ([
   ["team-3", 1, 0, 1, 0, 1, 1, 1, "playoff"],
   ["team-4", 1, 0, 1, 0, 1, 1, 1, "playoff"],
   ["team-2", 1, 0, 0, 1, 1, 2, 0, "eliminated"],
-]) satisfies StandingSeed[]).map(([teamId, played, wins, draws, losses, goalsFor, goalsAgainst, points, status]) => ({
+] satisfies StandingSeed[]).map(([teamId, played, wins, draws, losses, goalsFor, goalsAgainst, points, status]) => ({
   teamId,
   played,
   wins,
