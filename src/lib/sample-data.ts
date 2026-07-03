@@ -1,5 +1,17 @@
 import type { Match, Phase, StandingRow, Team, TournamentInfo } from "@/lib/types";
 
+type StandingSeed = [
+  teamId: string,
+  played: number,
+  wins: number,
+  draws: number,
+  losses: number,
+  goalsFor: number,
+  goalsAgainst: number,
+  points: number,
+  status: StandingRow["status"],
+];
+
 export const initialInfo: TournamentInfo = {
   name: "Continental Cup 2026",
   description: "Flexible multi-phase tournament setup with instant recalculation.",
@@ -106,12 +118,12 @@ export const initialMatches: Match[] = [
   },
 ];
 
-export const initialStandings: StandingRow[] = [
+export const initialStandings: StandingRow[] = ([
   ["team-1", 1, 1, 0, 0, 2, 1, 3, "qualifies"],
   ["team-3", 1, 0, 1, 0, 1, 1, 1, "playoff"],
   ["team-4", 1, 0, 1, 0, 1, 1, 1, "playoff"],
   ["team-2", 1, 0, 0, 1, 1, 2, 0, "eliminated"],
-].map(([teamId, played, wins, draws, losses, goalsFor, goalsAgainst, points, status]) => ({
+]) satisfies StandingSeed[]).map(([teamId, played, wins, draws, losses, goalsFor, goalsAgainst, points, status]) => ({
   teamId,
   played,
   wins,
