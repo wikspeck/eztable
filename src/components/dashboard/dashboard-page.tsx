@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useTournamentStore } from "@/store/use-tournament-store";
+import type { CustomColumn, StandingRow, Team } from "@/lib/types";
 
 const tabs = ["Overview", "Matches", "Standings", "Bracket", "Teams", "Settings"] as const;
 
@@ -13,7 +14,7 @@ export function DashboardPage() {
   const { info, phases, teams, matches, standings, currentPhaseId, settingsLocked, hasStarted, unlockSettings, relockSettings, updateMatchScore } =
     useTournamentStore();
 
-  const teamLookup = useMemo(() => Object.fromEntries(teams.map((team) => [team.id, team])), [teams]);
+  const teamLookup = useMemo<Record<string, Team>>(() => Object.fromEntries(teams.map((team) => [team.id, team])), [teams]);
   const currentPhase = phases.find((phase) => phase.id === currentPhaseId) ?? phases[0];
   const currentPhaseMatches = matches.filter((match) => match.phaseId === currentPhase?.id);
   const currentStandings = standings.filter((row) => row.phaseId === currentPhase?.id);
@@ -21,6 +22,7 @@ export function DashboardPage() {
   const knockoutPhase = phases.find((phase) => phase.type === "knockout");
   const bracketMatches = matches.filter((match) => match.phaseId === knockoutPhase?.id);
   const groupCount = Math.max(...currentStandings.map((row) => (row.groupIndex ?? 0) + 1), 0);
+  const currentCustomColumns = currentPhase?.groupSettings?.customColumns ?? currentPhase?.leagueSettings?.customColumns ?? currentPhase?.swissSettings?.customColumns ?? [];
 
   return (
     <div className="space-y-6">
@@ -73,7 +75,7 @@ export function DashboardPage() {
             <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-600" />
             <div>
               <p className="font-semibold text-amber-900">Settings are unlocked</p>
-              <p className="mt-1 text-sm text-amber-800">Structural edits after results exist can invalidate generated matches. Relock when you are done editing.</p>
+              <p className="mt-1 text-sm text-amber-800">Results stay intact here, but structural edits can change who advances. Relock once the structure is stable.</p>
             </div>
           </div>
         </Card>
@@ -104,7 +106,9 @@ export function DashboardPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-slate-900">{phase.name}</p>
-                      <p className="text-sm capitalize text-slate-500">{phase.type}</p>
+                      <p className="text-sm capitalize text-slate-500">
+                        {phase.type} · in {phase.inputTeams ?? 0} · out {phase.outputTeams ?? 0}
+                      </p>
                     </div>
                     <Badge tone={phase.id === currentPhase?.id ? "green" : "slate"}>{`Phase ${index + 1}`}</Badge>
                   </div>
@@ -143,9 +147,9 @@ export function DashboardPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Input type="number" className="w-20" defaultValue={match.scoreA} onChange={(event) => updateMatchScore(match.id, Number(event.target.value), match.scoreB)} />
+                    <Input type="number" className="w-20" value={match.scoreA} onChange={(event) => updateMatchScore(match.id, Number(event.target.value), match.scoreB)} />
                     <span className="text-slate-400">:</span>
-                    <Input type="number" className="w-20" defaultValue={match.scoreB} onChange={(event) => updateMatchScore(match.id, match.scoreA, Number(event.target.value))} />
+                    <Input type="number" className="w-20" value={match.scoreB} onChange={(event) => updateMatchScore(match.id, match.scoreA, Number(event.target.value))} />
                     <Button size="sm" onClick={() => updateMatchScore(match.id, match.scoreA, match.scoreB)}>Save</Button>
                   </div>
                 </Card>
@@ -166,11 +170,12 @@ export function DashboardPage() {
                 title={`Group ${String.fromCharCode(65 + groupIndex)}`}
                 rows={currentStandings.filter((row) => row.groupIndex === groupIndex)}
                 teamLookup={teamLookup}
+                customColumns={currentCustomColumns}
               />
             ))}
           </div>
         ) : (
-          <StandingsTable title={currentPhase?.name ?? "Standings"} rows={currentStandings} teamLookup={teamLookup} />
+          <StandingsTable title={currentPhase?.name ?? "Standings"} rows={currentStandings} teamLookup={teamLookup} customColumns={currentCustomColumns} />
         )
       ) : null}
 
@@ -238,19 +243,30 @@ export function DashboardPage() {
                     <span className="font-semibold text-slate-900">{phase.name}</span>
                     <Badge>{phase.type}</Badge>
                   </div>
-                  <p className="mt-2 text-sm text-slate-500">{settingsLocked ? "Locked to protect existing results." : "Unlocked. Structural edits can change generated results."}</p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    {settingsLocked ? "Locked to protect existing results." : "Unlocked. Structural edits can change generated advancement paths."}
+                  </p>
                 </div>
               ))}
             </div>
           </Card>
           <Card className="space-y-4">
-            <h3 className="text-lg font-bold text-slate-900">Safety</h3>
-            <p className="text-sm text-slate-500">Unlocking settings is explicit because changing structure after match entry may reset generated progression paths.</p>
-            <div className="rounded-xl border border-border bg-slate-50 p-4">
-              <p className="font-semibold text-slate-900">{settingsLocked ? "Locked after start" : "Unlocked for structural edits"}</p>
-              <p className="mt-1 text-sm text-slate-500">
-                {settingsLocked ? "Results entry remains available while tournament structure stays protected." : "Relock when setup is stable to avoid accidental resets."}
-              </p>
+            <h3 className="text-lg font-bold text-slate-900">Ranking and custom columns</h3>
+            <p className="text-sm text-slate-500">Custom standings columns are shown in the relevant phase tables. Numeric custom columns can participate in ranking if enabled during setup.</p>
+            <div className="grid gap-3">
+              {currentCustomColumns.length === 0 ? (
+                <EmptyState title="No custom columns" description="Add custom columns in setup if you want extra tracked standings values." />
+              ) : (
+                currentCustomColumns.map((column) => (
+                  <div key={column.id} className="rounded-xl border border-border bg-slate-50 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-slate-900">{column.name}</span>
+                      <Badge>{column.type}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{column.affectsRanking ? "Used in ranking when enabled as a tie breaker." : "Displayed only."}</p>
+                  </div>
+                ))
+              )}
             </div>
           </Card>
         </div>
@@ -263,10 +279,12 @@ function StandingsTable({
   title,
   rows,
   teamLookup,
+  customColumns,
 }: {
   title: string;
-  rows: ReturnType<typeof useTournamentStore.getState>["standings"];
-  teamLookup: Record<string, ReturnType<typeof useTournamentStore.getState>["teams"][number]>;
+  rows: StandingRow[];
+  teamLookup: Record<string, Team>;
+  customColumns: CustomColumn[];
 }) {
   return (
     <Card className="overflow-x-auto p-0">
@@ -276,7 +294,7 @@ function StandingsTable({
       <table className="min-w-full text-left text-sm">
         <thead className="bg-slate-50 text-slate-500">
           <tr>
-            {["Pos", "Team", "P", "W", "D", "L", "GF", "GA", "GD", "Pts"].map((head) => (
+            {["Pos", "Team", "P", "W", "D", "L", "GF", "GA", "GD", ...customColumns.map((column) => column.name), "Pts"].map((head) => (
               <th key={head} className="px-4 py-3 font-medium">
                 {head}
               </th>
@@ -304,6 +322,11 @@ function StandingsTable({
                 <td className="px-4 py-4">{row.goalsFor}</td>
                 <td className="px-4 py-4">{row.goalsAgainst}</td>
                 <td className="px-4 py-4">{row.goalsFor - row.goalsAgainst}</td>
+                {customColumns.map((column) => (
+                  <td key={column.id} className="px-4 py-4">
+                    {String(row.customValues[column.id] ?? column.defaultValue ?? "")}
+                  </td>
+                ))}
                 <td className="px-4 py-4 font-semibold text-slate-900">{row.points}</td>
               </tr>
             );

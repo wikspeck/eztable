@@ -1,4 +1,4 @@
-import type { Match, Phase, StandingRow, Team, TournamentInfo } from "@/lib/types";
+import type { Match, Phase, StandingRow, Team, TieBreakerRule, TournamentInfo } from "@/lib/types";
 
 type StandingSeed = [
   teamId: string,
@@ -10,6 +10,14 @@ type StandingSeed = [
   goalsAgainst: number,
   points: number,
   status: StandingRow["status"],
+];
+
+export const defaultTieBreakers = (): TieBreakerRule[] => [
+  { id: "tb-points", label: "Points", key: "points", enabled: true },
+  { id: "tb-goal-difference", label: "Goal difference", key: "goalDifference", enabled: true },
+  { id: "tb-goals-scored", label: "Goals scored", key: "goalsScored", enabled: true },
+  { id: "tb-wins", label: "Wins", key: "wins", enabled: true },
+  { id: "tb-head-to-head", label: "Head-to-head", key: "headToHead", enabled: true },
 ];
 
 export const initialInfo: TournamentInfo = {
@@ -27,6 +35,7 @@ export const initialPhases: Phase[] = [
     groupSettings: {
       groupCount: 2,
       teamsPerGroup: 4,
+      allowUnevenGroups: false,
       assignment: "automatic",
       doubleRoundRobin: false,
       homeAway: false,
@@ -34,7 +43,8 @@ export const initialPhases: Phase[] = [
       bestSecondPlaceCount: 0,
       bestThirdPlaceCount: 0,
       points: { win: 3, draw: 1, loss: 0 },
-      tieBreakers: ["Goal difference", "Goals scored", "Head-to-head", "Wins"],
+      tieBreakers: defaultTieBreakers(),
+      customColumns: [],
     },
   },
   {
@@ -68,19 +78,7 @@ export const initialTeams: Team[] = [
   logo: "",
 }));
 
-export const initialMatches: Match[] = [
-  {
-    id: "match-1",
-    phaseId: "phase-groups",
-    roundLabel: "Group A · Matchday 1",
-    groupIndex: 0,
-    teamA: "team-1",
-    teamB: "team-2",
-    scoreA: 2,
-    scoreB: 1,
-    played: true,
-  },
-];
+export const initialMatches: Match[] = [];
 
 export const initialStandings: StandingRow[] = ([
   ["team-1", 1, 1, 0, 0, 2, 1, 3, "qualifies"],
@@ -96,5 +94,6 @@ export const initialStandings: StandingRow[] = ([
   goalsFor,
   goalsAgainst,
   points,
+  customValues: {},
   status,
 }));

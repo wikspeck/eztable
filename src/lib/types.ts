@@ -1,13 +1,37 @@
 export type PhaseType = "groups" | "swiss" | "league" | "knockout";
+export type SetupStep = "info" | "participants" | "teams" | "phases" | "rules" | "seeding" | "review" | "start";
 
-export type TieBreaker =
-  | "Goal difference"
-  | "Goals scored"
-  | "Goals conceded"
-  | "Head-to-head"
-  | "Wins"
-  | "Fair play"
-  | "Random draw";
+export type BuiltInTieBreakerKey =
+  | "points"
+  | "goalDifference"
+  | "goalsScored"
+  | "goalsConceded"
+  | "headToHead"
+  | "wins"
+  | "fairPlay"
+  | "randomDraw";
+
+export type CustomColumnType = "number" | "text" | "boolean" | "percentage";
+export type RankingDirection = "higher" | "lower";
+export type ColumnEntryMode = "manual" | "auto";
+
+export interface CustomColumn {
+  id: string;
+  name: string;
+  type: CustomColumnType;
+  entryMode: ColumnEntryMode;
+  affectsRanking: boolean;
+  rankingDirection?: RankingDirection;
+  addsToPoints?: boolean;
+  defaultValue?: number | string | boolean;
+}
+
+export interface TieBreakerRule {
+  id: string;
+  label: string;
+  key: BuiltInTieBreakerKey | `custom:${string}`;
+  enabled: boolean;
+}
 
 export interface TournamentInfo {
   name: string;
@@ -19,6 +43,7 @@ export interface TournamentInfo {
 export interface GroupSettings {
   groupCount: number;
   teamsPerGroup: number;
+  allowUnevenGroups: boolean;
   assignment: "automatic" | "manual";
   doubleRoundRobin: boolean;
   homeAway: boolean;
@@ -30,7 +55,8 @@ export interface GroupSettings {
     draw: number;
     loss: number;
   };
-  tieBreakers: TieBreaker[];
+  tieBreakers: TieBreakerRule[];
+  customColumns: CustomColumn[];
 }
 
 export interface SwissSettings {
@@ -40,7 +66,9 @@ export interface SwissSettings {
   allowByes: boolean;
   byeHandling: "Lowest ranked" | "Random" | "Manual";
   points: GroupSettings["points"];
-  tieBreakers: TieBreaker[];
+  tieBreakers: TieBreakerRule[];
+  customColumns: CustomColumn[];
+  advancingTeams: number;
 }
 
 export interface LeagueSettings {
@@ -50,7 +78,8 @@ export interface LeagueSettings {
   relegation: number;
   playoffSpots: number;
   points: GroupSettings["points"];
-  tieBreakers: TieBreaker[];
+  tieBreakers: TieBreakerRule[];
+  customColumns: CustomColumn[];
 }
 
 export interface KnockoutSettings {
@@ -59,12 +88,15 @@ export interface KnockoutSettings {
   thirdPlaceMatch: boolean;
   allowByes: boolean;
   seeding: "Ranked" | "Random Draw" | "Manual";
+  expectedTeams?: number;
 }
 
 export interface Phase {
   id: string;
   name: string;
   type: PhaseType;
+  inputTeams?: number;
+  outputTeams?: number;
   estimatedTeams?: number;
   groupAssignments?: string[][];
   groupSettings?: GroupSettings;
@@ -94,6 +126,8 @@ export interface Match {
   isBye?: boolean;
 }
 
+export type CustomColumnValue = number | string | boolean;
+
 export interface StandingRow {
   teamId: string;
   phaseId?: string;
@@ -105,5 +139,6 @@ export interface StandingRow {
   goalsFor: number;
   goalsAgainst: number;
   points: number;
+  customValues: Record<string, CustomColumnValue>;
   status: "qualifies" | "playoff" | "eliminated";
 }

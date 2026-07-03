@@ -1,38 +1,75 @@
 import { create } from "zustand";
-import { initialInfo, initialPhases, initialTeams } from "@/lib/sample-data";
-import type { Match, Phase, PhaseType, StandingRow, Team, TieBreaker, TournamentInfo } from "@/lib/types";
+import { defaultTieBreakers, initialInfo, initialPhases, initialTeams } from "@/lib/sample-data";
+import type {
+  BuiltInTieBreakerKey,
+  CustomColumn,
+  CustomColumnType,
+  CustomColumnValue,
+  Match,
+  Phase,
+  PhaseType,
+  RankingDirection,
+  StandingRow,
+  Team,
+  TieBreakerRule,
+  TournamentInfo,
+} from "@/lib/types";
+
+type SetupStep = "info" | "participants" | "teams" | "phases" | "rules" | "seeding" | "review" | "start";
+
+interface StepValidation {
+  valid: boolean;
+  message?: string;
+}
 
 interface TournamentState {
   info: TournamentInfo;
-  phases: Phase[];
   teams: Team[];
+  phases: Phase[];
   matches: Match[];
   standings: StandingRow[];
   currentPhaseId: string;
-  wizardStep: number;
+  currentStep: SetupStep;
   hasStarted: boolean;
   settingsLocked: boolean;
   validationWarnings: string[];
+  stepValidations: Record<SetupStep, StepValidation>;
   updateInfo: (payload: TournamentInfo) => void;
-  setWizardStep: (step: number) => void;
+  setCurrentStep: (step: SetupStep) => void;
+  setParticipantCount: (count: number) => void;
+  addTeam: () => void;
+  updateTeam: (teamId: string, updater: (team: Team) => Team) => void;
   addPhase: (type: PhaseType) => void;
   removePhase: (phaseId: string) => void;
   movePhase: (phaseId: string, direction: "up" | "down") => void;
   updatePhaseName: (phaseId: string, name: string) => void;
   updatePhase: (phaseId: string, updater: (phase: Phase) => Phase) => void;
-  setParticipantCount: (count: number) => void;
-  addTeam: () => void;
-  updateTeam: (teamId: string, updater: (team: Team) => Team) => void;
   randomizeGroups: (phaseId: string) => void;
   moveTeamBetweenGroups: (phaseId: string, fromGroupIndex: number, teamId: string, direction: "left" | "right") => void;
+  addCustomColumn: (phaseId: string, type: CustomColumnType) => void;
+  updateCustomColumn: (phaseId: string, columnId: string, updater: (column: CustomColumn) => CustomColumn) => void;
+  removeCustomColumn: (phaseId: string, columnId: string) => void;
+  moveTieBreaker: (phaseId: string, tieBreakerId: string, direction: "up" | "down") => void;
+  toggleTieBreaker: (phaseId: string, tieBreakerId: string) => void;
+  addCustomTieBreaker: (phaseId: string, columnId: string) => void;
   startTournament: () => void;
   unlockSettings: () => void;
   relockSettings: () => void;
   updateMatchScore: (matchId: string, scoreA: number, scoreB: number) => void;
 }
 
-const defaultTieBreakers: TieBreaker[] = ["Goal difference", "Goals scored", "Head-to-head", "Wins"];
+const orderedSteps: SetupStep[] = ["info", "participants", "teams", "phases", "rules", "seeding", "review", "start"];
 const colorPalette = ["#1769ff", "#16a34a", "#f59e0b", "#dc2626", "#0f172a", "#7c3aed", "#0891b2", "#ea580c"];
+
+function createTeam(index: number): Team {
+  return {
+    id: `team-${index + 1}`,
+    name: `Team ${index + 1}`,
+    logo: "",
+    color: colorPalette[index % colorPalette.length],
+    abbreviation: `T${index + 1}`,
+  };
+}
 
 function moveItem<T>(items: T[], index: number, target: number) {
   const copy = [...items];
@@ -48,16 +85,6 @@ function shuffle<T>(items: T[]) {
     [copy[index], copy[target]] = [copy[target], copy[index]];
   }
   return copy;
-}
-
-function createTeam(index: number): Team {
-  return {
-    id: `team-${index + 1}`,
-    name: `Team ${index + 1}`,
-    logo: "",
-    color: colorPalette[index % colorPalette.length],
-    abbreviation: `T${index + 1}`,
-  };
 }
 
 function ensureTeamCount(teams: Team[], count: number) {
@@ -76,46 +103,88 @@ function nextPowerOfTwo(value: number) {
   return current;
 }
 
-function estimateIncomingTeams(phases: Phase[], participantCount: number, targetIndex: number) {
-  let current = participantCount;
-  for (let index = 0; index < targetIndex; index += 1) {
-    const phase = phases[index];
-    if (phase.type === "groups" && phase.groupSettings) {
-      current = Math.min(
-        current,
-        phase.groupSettings.groupCount * phase.groupSettings.qualifiersPerGroup +
-          phase.groupSettings.bestSecondPlaceCount +
-          phase.groupSettings.bestThirdPlaceCount,
-      );
-    } else if (phase.type === "league" && phase.leagueSettings) {
-      current = Math.min(current, Math.max(phase.leagueSettings.playoffSpots, 2));
-    } else if (phase.type === "swiss") {
-      current = Math.min(current, Math.max(4, Math.floor(current / 2)));
-    }
-  }
-  return current;
+function createCustomColumn(type: CustomColumnType, index: number): CustomColumn {
+  const numeric = type === "number" || type === "percentage";
+  return {
+    id: `custom-column-${Date.now()}-${index}`,
+    name: numeric ? `Custom metric ${index + 1}` : `Custom field ${index + 1}`,
+    type,
+    entryMode: "manual",
+    affectsRanking: numeric,
+    rankingDirection: numeric ? "higher" : undefined,
+    addsToPoints: false,
+    defaultValue: type === "boolean" ? false : type === "text" ? "" : 0,
+  };
 }
 
-function createDefaultPhase(type: PhaseType, phases: Phase[], participantCount: number): Phase {
-  const estimatedTeams = estimateIncomingTeams(phases, participantCount, phases.length);
+function estimatePhaseOutput(phase: Phase, inputTeams: number) {
+  if (phase.type === "groups" && phase.groupSettings) {
+    return Math.min(
+      inputTeams,
+      phase.groupSettings.groupCount * phase.groupSettings.qualifiersPerGroup +
+        phase.groupSettings.bestSecondPlaceCount +
+        phase.groupSettings.bestThirdPlaceCount,
+    );
+  }
+  if (phase.type === "league" && phase.leagueSettings) {
+    return Math.min(inputTeams, Math.max(phase.leagueSettings.playoffSpots, 2));
+  }
+  if (phase.type === "swiss" && phase.swissSettings) {
+    return Math.min(inputTeams, Math.max(2, phase.swissSettings.advancingTeams));
+  }
+  if (phase.type === "knockout") {
+    return Math.min(inputTeams, 1);
+  }
+  return inputTeams;
+}
+
+function initializePhases(phases: Phase[], participantCount: number, teams: Team[]) {
+  let inputTeams = participantCount;
+  return phases.map((phase) => {
+    const outputTeams = estimatePhaseOutput(phase, inputTeams);
+    const nextPhase: Phase = {
+      ...phase,
+      inputTeams,
+      outputTeams,
+      estimatedTeams: inputTeams,
+      groupAssignments:
+        phase.type === "groups"
+          ? phase.groupAssignments ?? generateGroupAssignments(phase, teams.slice(0, participantCount))
+          : undefined,
+      knockoutSettings:
+        phase.type === "knockout" && phase.knockoutSettings
+          ? { ...phase.knockoutSettings, expectedTeams: inputTeams }
+          : phase.knockoutSettings,
+    };
+    inputTeams = outputTeams;
+    return nextPhase;
+  });
+}
+
+function createPhase(type: PhaseType, phases: Phase[], participantCount: number): Phase {
+  const inputTeams = phases.length === 0 ? participantCount : phases[phases.length - 1].outputTeams ?? participantCount;
   if (type === "groups") {
-    const groups = Math.max(2, Math.min(4, Math.ceil(estimatedTeams / 4)));
+    const groups = Math.max(1, Math.min(inputTeams, Math.ceil(inputTeams / 4)));
+    const teamsPerGroup = Math.max(2, Math.ceil(inputTeams / groups));
     return {
       id: `phase-groups-${Date.now()}`,
       name: "Group Stage",
       type,
-      estimatedTeams,
+      inputTeams,
+      outputTeams: inputTeams,
       groupSettings: {
         groupCount: groups,
-        teamsPerGroup: Math.max(2, Math.ceil(estimatedTeams / groups)),
+        teamsPerGroup,
+        allowUnevenGroups: inputTeams % groups !== 0,
         assignment: "automatic",
         doubleRoundRobin: false,
         homeAway: false,
-        qualifiersPerGroup: 2,
+        qualifiersPerGroup: Math.min(2, teamsPerGroup),
         bestSecondPlaceCount: 0,
         bestThirdPlaceCount: 0,
         points: { win: 3, draw: 1, loss: 0 },
-        tieBreakers: [...defaultTieBreakers],
+        tieBreakers: defaultTieBreakers(),
+        customColumns: [],
       },
     };
   }
@@ -124,15 +193,17 @@ function createDefaultPhase(type: PhaseType, phases: Phase[], participantCount: 
       id: `phase-league-${Date.now()}`,
       name: "League Phase",
       type,
-      estimatedTeams,
+      inputTeams,
+      outputTeams: Math.min(inputTeams, Math.max(2, Math.min(4, inputTeams))),
       leagueSettings: {
         rounds: 1,
         homeAway: false,
         promotion: 0,
         relegation: 0,
-        playoffSpots: Math.min(4, estimatedTeams),
+        playoffSpots: Math.min(4, inputTeams),
         points: { win: 3, draw: 1, loss: 0 },
-        tieBreakers: [...defaultTieBreakers],
+        tieBreakers: defaultTieBreakers(),
+        customColumns: [],
       },
     };
   }
@@ -141,15 +212,18 @@ function createDefaultPhase(type: PhaseType, phases: Phase[], participantCount: 
       id: `phase-swiss-${Date.now()}`,
       name: "Swiss Phase",
       type,
-      estimatedTeams,
+      inputTeams,
+      outputTeams: Math.max(2, Math.floor(inputTeams / 2)),
       swissSettings: {
-        rounds: Math.max(3, Math.ceil(Math.log2(Math.max(estimatedTeams, 2)))),
+        rounds: Math.max(2, Math.ceil(Math.log2(Math.max(inputTeams, 2)))),
         pairing: "Standard Swiss",
         noRematches: true,
-        allowByes: true,
+        allowByes: inputTeams % 2 !== 0,
         byeHandling: "Lowest ranked",
         points: { win: 3, draw: 1, loss: 0 },
-        tieBreakers: ["Goal difference", "Goals scored", "Wins"],
+        tieBreakers: defaultTieBreakers(),
+        customColumns: [],
+        advancingTeams: Math.max(2, Math.floor(inputTeams / 2)),
       },
     };
   }
@@ -157,81 +231,144 @@ function createDefaultPhase(type: PhaseType, phases: Phase[], participantCount: 
     id: `phase-knockout-${Date.now()}`,
     name: "Knockout Phase",
     type,
-    estimatedTeams,
+    inputTeams,
+    outputTeams: 1,
     knockoutSettings: {
       format: "Single Elimination",
       bestOf: 1,
       thirdPlaceMatch: false,
-      allowByes: false,
+      allowByes: !isPowerOfTwo(inputTeams),
       seeding: "Ranked",
+      expectedTeams: inputTeams,
     },
   };
 }
 
-function generateGroupAssignments(phase: Phase, teams: Team[], participantCount: number) {
+function generateGroupAssignments(phase: Phase, teams: Team[]) {
   if (!phase.groupSettings) return [];
   const assignments = Array.from({ length: phase.groupSettings.groupCount }, () => [] as string[]);
-  shuffle(teams.slice(0, participantCount).map((team) => team.id)).forEach((teamId, index) => {
+  shuffle(teams.map((team) => team.id)).forEach((teamId, index) => {
     assignments[index % assignments.length].push(teamId);
   });
   return assignments;
 }
 
-function buildWarnings(info: TournamentInfo, phases: Phase[], teams: Team[]) {
-  const warnings: string[] = [];
-  if (teams.length !== info.participantCount) {
-    warnings.push(`Participant count is ${info.participantCount}, but ${teams.length} teams are configured.`);
+function clampPhaseSettings(phase: Phase) {
+  if (phase.groupSettings) {
+    const inputTeams = phase.inputTeams ?? 0;
+    const groupCount = Math.max(1, Math.min(phase.groupSettings.groupCount, inputTeams || 1));
+    const allowUnevenGroups = phase.groupSettings.allowUnevenGroups;
+    const maxTeamsPerGroup = Math.max(1, Math.ceil(inputTeams / groupCount));
+    const minTeamsPerGroup = allowUnevenGroups ? Math.max(1, Math.floor(inputTeams / groupCount)) : maxTeamsPerGroup;
+    const teamsPerGroup = Math.max(minTeamsPerGroup, Math.min(phase.groupSettings.teamsPerGroup, maxTeamsPerGroup));
+    const qualifiersPerGroup = Math.max(0, Math.min(phase.groupSettings.qualifiersPerGroup, teamsPerGroup));
+    const maxBestSecond = Math.max(0, groupCount - qualifiersPerGroup);
+    const bestSecondPlaceCount = Math.max(0, Math.min(phase.groupSettings.bestSecondPlaceCount, maxBestSecond));
+    const maxBestThird = teamsPerGroup >= 3 ? Math.max(0, groupCount) : 0;
+    const bestThirdPlaceCount = Math.max(0, Math.min(phase.groupSettings.bestThirdPlaceCount, maxBestThird));
+    return {
+      ...phase,
+      groupSettings: {
+        ...phase.groupSettings,
+        groupCount,
+        teamsPerGroup,
+        qualifiersPerGroup,
+        bestSecondPlaceCount,
+        bestThirdPlaceCount,
+      },
+    };
   }
-  phases.forEach((phase, index) => {
-    const incoming = estimateIncomingTeams(phases, info.participantCount, index);
-    if (phase.type === "groups" && phase.groupSettings) {
-      const slots = phase.groupSettings.groupCount * phase.groupSettings.teamsPerGroup;
-      if (incoming > slots) warnings.push(`${phase.name}: ${incoming} teams do not fit into the configured groups.`);
-      if (phase.groupSettings.qualifiersPerGroup > phase.groupSettings.teamsPerGroup) {
-        warnings.push(`${phase.name}: qualifiers per group cannot exceed teams per group.`);
-      }
-    }
-    if (phase.type === "swiss" && phase.swissSettings && !phase.swissSettings.allowByes && incoming % 2 !== 0) {
-      warnings.push(`${phase.name}: an odd number of teams requires byes.`);
-    }
-    if (phase.type === "knockout" && phase.knockoutSettings && !phase.knockoutSettings.allowByes && !isPowerOfTwo(incoming)) {
-      warnings.push(`${phase.name}: ${incoming} teams need byes or a power-of-two field.`);
-    }
-  });
-  return warnings;
+  if (phase.leagueSettings) {
+    const playoffSpots = Math.max(2, Math.min(phase.leagueSettings.playoffSpots, phase.inputTeams ?? phase.leagueSettings.playoffSpots));
+    return { ...phase, leagueSettings: { ...phase.leagueSettings, playoffSpots } };
+  }
+  if (phase.swissSettings) {
+    const inputTeams = phase.inputTeams ?? 2;
+    const advancingTeams = Math.max(2, Math.min(phase.swissSettings.advancingTeams, inputTeams));
+    const rounds = Math.max(1, Math.min(phase.swissSettings.rounds, inputTeams + Number(phase.swissSettings.allowByes)));
+    return { ...phase, swissSettings: { ...phase.swissSettings, advancingTeams, rounds } };
+  }
+  if (phase.knockoutSettings) {
+    return {
+      ...phase,
+      knockoutSettings: {
+        ...phase.knockoutSettings,
+        expectedTeams: phase.inputTeams,
+      },
+    };
+  }
+  return phase;
 }
 
-function buildRoundRobinMatches(teamIds: string[], phaseId: string, groupIndex?: number, label = "Round Robin") {
-  const matches: Match[] = [];
-  for (let left = 0; left < teamIds.length; left += 1) {
-    for (let right = left + 1; right < teamIds.length; right += 1) {
-      matches.push({
-        id: `${phaseId}-${groupIndex ?? "league"}-${left}-${right}`,
-        phaseId,
-        roundLabel: `${label} · Match ${matches.length + 1}`,
-        groupIndex,
-        teamA: teamIds[left],
-        teamB: teamIds[right],
-        scoreA: 0,
-        scoreB: 0,
-        played: false,
-      });
-    }
-  }
-  return matches;
+function customTieBreakerRules(columns: CustomColumn[]) {
+  return columns
+    .filter((column) => column.type === "number" || column.type === "percentage")
+    .map<TieBreakerRule>((column) => ({
+      id: `tb-custom-${column.id}`,
+      label: column.name,
+      key: `custom:${column.id}`,
+      enabled: Boolean(column.affectsRanking),
+    }));
 }
 
-function sortStandings(rows: StandingRow[], tieBreakers: TieBreaker[]) {
+function syncTieBreakers(phase: Phase) {
+  if (phase.groupSettings) {
+    const customRules = customTieBreakerRules(phase.groupSettings.customColumns);
+    const existing = phase.groupSettings.tieBreakers.filter((rule) => !String(rule.key).startsWith("custom:"));
+    return { ...phase, groupSettings: { ...phase.groupSettings, tieBreakers: [...existing, ...customRules] } };
+  }
+  if (phase.leagueSettings) {
+    const customRules = customTieBreakerRules(phase.leagueSettings.customColumns);
+    const existing = phase.leagueSettings.tieBreakers.filter((rule) => !String(rule.key).startsWith("custom:"));
+    return { ...phase, leagueSettings: { ...phase.leagueSettings, tieBreakers: [...existing, ...customRules] } };
+  }
+  if (phase.swissSettings) {
+    const customRules = customTieBreakerRules(phase.swissSettings.customColumns);
+    const existing = phase.swissSettings.tieBreakers.filter((rule) => !String(rule.key).startsWith("custom:"));
+    return { ...phase, swissSettings: { ...phase.swissSettings, tieBreakers: [...existing, ...customRules] } };
+  }
+  return phase;
+}
+
+function phaseColumns(phase: Phase) {
+  return phase.groupSettings?.customColumns ?? phase.leagueSettings?.customColumns ?? phase.swissSettings?.customColumns ?? [];
+}
+
+function phaseTieBreakers(phase: Phase) {
+  return phase.groupSettings?.tieBreakers ?? phase.leagueSettings?.tieBreakers ?? phase.swissSettings?.tieBreakers ?? [];
+}
+
+function defaultCustomValues(columns: CustomColumn[]) {
+  return Object.fromEntries(columns.map((column) => [column.id, column.defaultValue ?? (column.type === "boolean" ? false : column.type === "text" ? "" : 0)]));
+}
+
+function getTieBreakerValue(rule: TieBreakerRule, row: StandingRow, headToHeadRank = 0) {
+  if (rule.key === "points") return row.points;
+  if (rule.key === "goalDifference") return row.goalsFor - row.goalsAgainst;
+  if (rule.key === "goalsScored") return row.goalsFor;
+  if (rule.key === "goalsConceded") return row.goalsAgainst;
+  if (rule.key === "wins") return row.wins;
+  if (rule.key === "headToHead") return headToHeadRank;
+  if (String(rule.key).startsWith("custom:")) {
+    const id = String(rule.key).slice("custom:".length);
+    return row.customValues[id];
+  }
+  return 0;
+}
+
+function sortStandings(rows: StandingRow[], tieBreakers: TieBreakerRule[], columns: CustomColumn[]) {
   return [...rows].sort((left, right) => {
-    if (right.points !== left.points) return right.points - left.points;
-    for (const tieBreaker of tieBreakers) {
-      if (tieBreaker === "Goal difference") {
-        const value = right.goalsFor - right.goalsAgainst - (left.goalsFor - left.goalsAgainst);
-        if (value !== 0) return value;
+    for (const rule of tieBreakers.filter((entry) => entry.enabled)) {
+      const leftValue = getTieBreakerValue(rule, left);
+      const rightValue = getTieBreakerValue(rule, right);
+      if (leftValue === rightValue) continue;
+      const customColumn = String(rule.key).startsWith("custom:")
+        ? columns.find((column) => `custom:${column.id}` === rule.key)
+        : undefined;
+      const lowerWins = rule.key === "goalsConceded" || customColumn?.rankingDirection === "lower";
+      if (typeof leftValue === "number" && typeof rightValue === "number") {
+        return lowerWins ? leftValue - rightValue : rightValue - leftValue;
       }
-      if (tieBreaker === "Goals scored" && right.goalsFor !== left.goalsFor) return right.goalsFor - left.goalsFor;
-      if (tieBreaker === "Goals conceded" && left.goalsAgainst !== right.goalsAgainst) return left.goalsAgainst - right.goalsAgainst;
-      if (tieBreaker === "Wins" && right.wins !== left.wins) return right.wins - left.wins;
     }
     return left.teamId.localeCompare(right.teamId);
   });
@@ -239,8 +376,9 @@ function sortStandings(rows: StandingRow[], tieBreakers: TieBreaker[]) {
 
 function computeStandings(phases: Phase[], matches: Match[], teams: Team[], participantCount: number) {
   const standings: StandingRow[] = [];
-  const activeTeams = teams.slice(0, participantCount);
+  const participantTeams = teams.slice(0, participantCount);
   phases.forEach((phase) => {
+    const columns = phaseColumns(phase);
     if (phase.type === "groups" && phase.groupSettings) {
       const settings = phase.groupSettings;
       const assignments = phase.groupAssignments ?? [];
@@ -256,52 +394,55 @@ function computeStandings(phases: Phase[], matches: Match[], teams: Team[], part
           goalsFor: 0,
           goalsAgainst: 0,
           points: 0,
+          customValues: defaultCustomValues(columns),
           status: "eliminated" as const,
         }));
         const rowById = Object.fromEntries(rows.map((row) => [row.teamId, row]));
         matches
           .filter((match) => match.phaseId === phase.id && match.groupIndex === groupIndex && match.played)
           .forEach((match) => {
-            const home = rowById[match.teamA];
-            const away = rowById[match.teamB];
-            if (!home || !away) return;
-            home.played += 1;
-            away.played += 1;
-            home.goalsFor += match.scoreA;
-            home.goalsAgainst += match.scoreB;
-            away.goalsFor += match.scoreB;
-            away.goalsAgainst += match.scoreA;
+            const left = rowById[match.teamA];
+            const right = rowById[match.teamB];
+            if (!left || !right) return;
+            left.played += 1;
+            right.played += 1;
+            left.goalsFor += match.scoreA;
+            left.goalsAgainst += match.scoreB;
+            right.goalsFor += match.scoreB;
+            right.goalsAgainst += match.scoreA;
             if (match.scoreA > match.scoreB) {
-              home.wins += 1;
-              away.losses += 1;
-              home.points += settings.points.win;
-              away.points += settings.points.loss;
+              left.wins += 1;
+              right.losses += 1;
+              left.points += settings.points.win;
+              right.points += settings.points.loss;
             } else if (match.scoreB > match.scoreA) {
-              away.wins += 1;
-              home.losses += 1;
-              away.points += settings.points.win;
-              home.points += settings.points.loss;
+              right.wins += 1;
+              left.losses += 1;
+              right.points += settings.points.win;
+              left.points += settings.points.loss;
             } else {
-              home.draws += 1;
-              away.draws += 1;
-              home.points += settings.points.draw;
-              away.points += settings.points.draw;
+              left.draws += 1;
+              right.draws += 1;
+              left.points += settings.points.draw;
+              right.points += settings.points.draw;
             }
+            columns.forEach((column) => {
+              if (column.addsToPoints && typeof column.defaultValue === "number") {
+                left.points += column.defaultValue;
+                right.points += column.defaultValue;
+              }
+            });
           });
-        const sorted = sortStandings(rows, settings.tieBreakers);
+        const sorted = sortStandings(rows, settings.tieBreakers, columns);
         sorted.forEach((row, index) => {
           if (index < settings.qualifiersPerGroup) row.status = "qualifies";
-          else if (
-            index <
-            settings.qualifiersPerGroup + settings.bestSecondPlaceCount + settings.bestThirdPlaceCount
-          ) {
-            row.status = "playoff";
-          }
+          else if (index < settings.qualifiersPerGroup + settings.bestSecondPlaceCount + settings.bestThirdPlaceCount) row.status = "playoff";
         });
         standings.push(...sorted);
       });
     } else if (phase.type === "league" && phase.leagueSettings) {
-      const rows = activeTeams.map((team) => ({
+      const settings = phase.leagueSettings;
+      const rows = participantTeams.map((team) => ({
         teamId: team.id,
         phaseId: phase.id,
         played: 0,
@@ -311,45 +452,47 @@ function computeStandings(phases: Phase[], matches: Match[], teams: Team[], part
         goalsFor: 0,
         goalsAgainst: 0,
         points: 0,
+        customValues: defaultCustomValues(columns),
         status: "eliminated" as const,
       }));
       const rowById = Object.fromEntries(rows.map((row) => [row.teamId, row]));
       matches
         .filter((match) => match.phaseId === phase.id && match.played)
         .forEach((match) => {
-          const home = rowById[match.teamA];
-          const away = rowById[match.teamB];
-          if (!home || !away) return;
-          home.played += 1;
-          away.played += 1;
-          home.goalsFor += match.scoreA;
-          home.goalsAgainst += match.scoreB;
-          away.goalsFor += match.scoreB;
-          away.goalsAgainst += match.scoreA;
+          const left = rowById[match.teamA];
+          const right = rowById[match.teamB];
+          if (!left || !right) return;
+          left.played += 1;
+          right.played += 1;
+          left.goalsFor += match.scoreA;
+          left.goalsAgainst += match.scoreB;
+          right.goalsFor += match.scoreB;
+          right.goalsAgainst += match.scoreA;
           if (match.scoreA > match.scoreB) {
-            home.wins += 1;
-            away.losses += 1;
-            home.points += phase.leagueSettings!.points.win;
-            away.points += phase.leagueSettings!.points.loss;
+            left.wins += 1;
+            right.losses += 1;
+            left.points += settings.points.win;
+            right.points += settings.points.loss;
           } else if (match.scoreB > match.scoreA) {
-            away.wins += 1;
-            home.losses += 1;
-            away.points += phase.leagueSettings!.points.win;
-            home.points += phase.leagueSettings!.points.loss;
+            right.wins += 1;
+            left.losses += 1;
+            right.points += settings.points.win;
+            left.points += settings.points.loss;
           } else {
-            home.draws += 1;
-            away.draws += 1;
-            home.points += phase.leagueSettings!.points.draw;
-            away.points += phase.leagueSettings!.points.draw;
+            left.draws += 1;
+            right.draws += 1;
+            left.points += settings.points.draw;
+            right.points += settings.points.draw;
           }
         });
-      const sorted = sortStandings(rows, phase.leagueSettings.tieBreakers);
+      const sorted = sortStandings(rows, settings.tieBreakers, columns);
       sorted.forEach((row, index) => {
-        if (index < phase.leagueSettings!.playoffSpots) row.status = "qualifies";
+        if (index < settings.playoffSpots) row.status = "qualifies";
       });
       standings.push(...sorted);
     } else if (phase.type === "swiss" && phase.swissSettings) {
-      const rows = activeTeams.map((team) => ({
+      const settings = phase.swissSettings;
+      const rows = participantTeams.map((team) => ({
         teamId: team.id,
         phaseId: phase.id,
         played: 0,
@@ -359,65 +502,90 @@ function computeStandings(phases: Phase[], matches: Match[], teams: Team[], part
         goalsFor: 0,
         goalsAgainst: 0,
         points: 0,
+        customValues: defaultCustomValues(columns),
         status: "eliminated" as const,
       }));
       const rowById = Object.fromEntries(rows.map((row) => [row.teamId, row]));
       matches
         .filter((match) => match.phaseId === phase.id)
         .forEach((match) => {
-          const home = rowById[match.teamA];
-          if (!home) return;
+          const left = rowById[match.teamA];
+          if (!left) return;
           if (match.isBye) {
-            home.played += 1;
-            home.wins += 1;
-            home.points += phase.swissSettings!.points.win;
+            left.played += 1;
+            left.wins += 1;
+            left.points += settings.points.win;
             return;
           }
           if (!match.played) return;
-          const away = rowById[match.teamB];
-          if (!away) return;
-          home.played += 1;
-          away.played += 1;
-          home.goalsFor += match.scoreA;
-          home.goalsAgainst += match.scoreB;
-          away.goalsFor += match.scoreB;
-          away.goalsAgainst += match.scoreA;
+          const right = rowById[match.teamB];
+          if (!right) return;
+          left.played += 1;
+          right.played += 1;
+          left.goalsFor += match.scoreA;
+          left.goalsAgainst += match.scoreB;
+          right.goalsFor += match.scoreB;
+          right.goalsAgainst += match.scoreA;
           if (match.scoreA > match.scoreB) {
-            home.wins += 1;
-            away.losses += 1;
-            home.points += phase.swissSettings!.points.win;
-            away.points += phase.swissSettings!.points.loss;
+            left.wins += 1;
+            right.losses += 1;
+            left.points += settings.points.win;
+            right.points += settings.points.loss;
           } else if (match.scoreB > match.scoreA) {
-            away.wins += 1;
-            home.losses += 1;
-            away.points += phase.swissSettings!.points.win;
-            home.points += phase.swissSettings!.points.loss;
+            right.wins += 1;
+            left.losses += 1;
+            right.points += settings.points.win;
+            left.points += settings.points.loss;
           } else {
-            home.draws += 1;
-            away.draws += 1;
-            home.points += phase.swissSettings!.points.draw;
-            away.points += phase.swissSettings!.points.draw;
+            left.draws += 1;
+            right.draws += 1;
+            left.points += settings.points.draw;
+            right.points += settings.points.draw;
           }
         });
-      standings.push(...sortStandings(rows, phase.swissSettings.tieBreakers));
+      const sorted = sortStandings(rows, settings.tieBreakers, columns);
+      sorted.forEach((row, index) => {
+        if (index < settings.advancingTeams) row.status = "qualifies";
+      });
+      standings.push(...sorted);
     }
   });
   return standings;
 }
 
-function getQualifiedTeams(phases: Phase[], standings: StandingRow[], teams: Team[], participantCount: number, index: number) {
-  const previous = phases[index - 1];
+function getAdvancingTeams(phases: Phase[], standings: StandingRow[], teams: Team[], participantCount: number, phaseIndex: number) {
+  const previous = phases[phaseIndex - 1];
   if (!previous) return teams.slice(0, participantCount).map((team) => team.id);
-  const previousRows = standings.filter((row) => row.phaseId === previous.id);
-  if (previous.type === "groups") return previousRows.filter((row) => row.status !== "eliminated").map((row) => row.teamId);
-  if (previous.type === "league" && previous.leagueSettings) return previousRows.slice(0, previous.leagueSettings.playoffSpots).map((row) => row.teamId);
-  if (previous.type === "swiss") return previousRows.slice(0, Math.max(4, Math.floor(previousRows.length / 2))).map((row) => row.teamId);
+  const rows = standings.filter((row) => row.phaseId === previous.id);
+  if (previous.type === "groups") return rows.filter((row) => row.status !== "eliminated").map((row) => row.teamId);
+  if (previous.type === "league" && previous.leagueSettings) return rows.slice(0, previous.leagueSettings.playoffSpots).map((row) => row.teamId);
+  if (previous.type === "swiss" && previous.swissSettings) return rows.slice(0, previous.swissSettings.advancingTeams).map((row) => row.teamId);
   return teams.slice(0, participantCount).map((team) => team.id);
+}
+
+function buildRoundRobinMatches(teamIds: string[], phaseId: string, groupIndex?: number, label = "Round Robin") {
+  const matches: Match[] = [];
+  for (let left = 0; left < teamIds.length; left += 1) {
+    for (let right = left + 1; right < teamIds.length; right += 1) {
+      matches.push({
+        id: `${phaseId}-${groupIndex ?? "main"}-${left}-${right}`,
+        phaseId,
+        roundLabel: `${label} · Match ${matches.length + 1}`,
+        groupIndex,
+        teamA: teamIds[left],
+        teamB: teamIds[right],
+        scoreA: 0,
+        scoreB: 0,
+        played: false,
+      });
+    }
+  }
+  return matches;
 }
 
 function generateMatches(phases: Phase[], teams: Team[], participantCount: number, standings: StandingRow[]) {
   const matches: Match[] = [];
-  phases.forEach((phase, index) => {
+  phases.forEach((phase, phaseIndex) => {
     if (phase.type === "groups" && phase.groupSettings) {
       (phase.groupAssignments ?? []).forEach((group, groupIndex) => {
         matches.push(...buildRoundRobinMatches(group, phase.id, groupIndex, `Group ${String.fromCharCode(65 + groupIndex)}`));
@@ -425,37 +593,38 @@ function generateMatches(phases: Phase[], teams: Team[], participantCount: numbe
     } else if (phase.type === "league") {
       matches.push(...buildRoundRobinMatches(teams.slice(0, participantCount).map((team) => team.id), phase.id, undefined, "League"));
     } else if (phase.type === "swiss" && phase.swissSettings) {
-      const teamIds = teams.slice(0, participantCount).map((team) => team.id);
+      const teamIds = getAdvancingTeams(phases, standings, teams, participantCount, phaseIndex);
       for (let round = 0; round < phase.swissSettings.rounds; round += 1) {
-        for (let pair = 0; pair < teamIds.length; pair += 2) {
-          const teamA = teamIds[pair] ?? "";
-          const teamB = teamIds[pair + 1] ?? "";
+        for (let index = 0; index < teamIds.length; index += 2) {
+          const teamA = teamIds[index] ?? "";
+          const teamB = teamIds[index + 1] ?? "";
+          const isBye = Boolean(teamA && !teamB);
           matches.push({
-            id: `${phase.id}-swiss-${round}-${pair / 2}`,
+            id: `${phase.id}-swiss-${round}-${index / 2}`,
             phaseId: phase.id,
             roundLabel: `Swiss Round ${round + 1}`,
             teamA,
             teamB,
-            scoreA: teamA && !teamB ? 1 : 0,
+            scoreA: isBye ? 1 : 0,
             scoreB: 0,
-            played: Boolean(teamA && !teamB),
-            isBye: Boolean(teamA && !teamB),
+            played: isBye,
+            isBye,
           });
         }
       }
     } else if (phase.type === "knockout" && phase.knockoutSettings) {
-      const seededTeams = getQualifiedTeams(phases, standings, teams, participantCount, index);
-      const bracketSize = phase.knockoutSettings.allowByes ? nextPowerOfTwo(Math.max(seededTeams.length, 2)) : seededTeams.length;
-      const field = [...seededTeams];
+      const entrants = getAdvancingTeams(phases, standings, teams, participantCount, phaseIndex);
+      const bracketSize = phase.knockoutSettings.allowByes ? nextPowerOfTwo(Math.max(entrants.length, 2)) : entrants.length;
+      const field = [...entrants];
       while (field.length < bracketSize) field.push("");
-      for (let pair = 0; pair < field.length; pair += 2) {
-        const teamA = field[pair] ?? "";
-        const teamB = field[pair + 1] ?? "";
+      for (let index = 0; index < field.length; index += 2) {
+        const teamA = field[index] ?? "";
+        const teamB = field[index + 1] ?? "";
         const isBye = Boolean(teamA && !teamB) || Boolean(!teamA && teamB);
         matches.push({
-          id: `${phase.id}-bracket-${pair / 2}`,
+          id: `${phase.id}-round-1-${index / 2}`,
           phaseId: phase.id,
-          roundLabel: `Round 1 · Match ${pair / 2 + 1}`,
+          roundLabel: `Round 1 · Match ${index / 2 + 1}`,
           teamA,
           teamB,
           scoreA: teamA && !teamB ? 1 : 0,
@@ -469,45 +638,119 @@ function generateMatches(phases: Phase[], teams: Team[], participantCount: numbe
   return matches;
 }
 
-function initializePhases(phases: Phase[], teams: Team[], participantCount: number) {
-  return phases.map((phase, index) => ({
-    ...phase,
-    estimatedTeams: estimateIncomingTeams(phases, participantCount, index),
-    groupAssignments: phase.type === "groups" ? phase.groupAssignments ?? generateGroupAssignments(phase, teams, participantCount) : undefined,
-  }));
+function buildWarnings(info: TournamentInfo, phases: Phase[], teams: Team[]) {
+  const warnings: string[] = [];
+  if (teams.length !== info.participantCount) warnings.push(`Participant count is ${info.participantCount}, but ${teams.length} teams are currently configured.`);
+
+  phases.forEach((phase) => {
+    const inputTeams = phase.inputTeams ?? 0;
+    if (phase.groupSettings) {
+      const settings = phase.groupSettings;
+      if (settings.groupCount > inputTeams) warnings.push(`${phase.name}: group count cannot exceed incoming teams.`);
+      if (!settings.allowUnevenGroups && inputTeams % settings.groupCount !== 0) warnings.push(`${phase.name}: uneven groups are disabled, so teams must divide evenly.`);
+      if (settings.groupCount * settings.teamsPerGroup < inputTeams) warnings.push(`${phase.name}: teams per group do not fit the incoming teams.`);
+      if (settings.qualifiersPerGroup > settings.teamsPerGroup) warnings.push(`${phase.name}: qualifiers per group cannot exceed group size.`);
+      if (settings.bestSecondPlaceCount > 0 && settings.groupCount < 2) warnings.push(`${phase.name}: best second-place qualification needs at least two groups.`);
+      if (settings.bestThirdPlaceCount > 0 && settings.teamsPerGroup < 3) warnings.push(`${phase.name}: third-place ranking requires at least three teams per group.`);
+    }
+    if (phase.swissSettings) {
+      if (!phase.swissSettings.allowByes && inputTeams % 2 !== 0) warnings.push(`${phase.name}: odd Swiss fields require byes.`);
+      if (phase.swissSettings.advancingTeams > inputTeams) warnings.push(`${phase.name}: advancing teams cannot exceed incoming teams.`);
+    }
+    if (phase.knockoutSettings) {
+      if (!phase.knockoutSettings.allowByes && !isPowerOfTwo(inputTeams)) warnings.push(`${phase.name}: ${inputTeams} teams require byes or a power-of-two bracket.`);
+      if (phase.knockoutSettings.expectedTeams && phase.knockoutSettings.expectedTeams > inputTeams && !phase.knockoutSettings.allowByes) warnings.push(`${phase.name}: expected bracket size is larger than the teams this phase receives.`);
+    }
+  });
+
+  return warnings;
 }
 
-const seededTeams = ensureTeamCount(initialTeams, initialInfo.participantCount);
-const seededPhases = initializePhases(initialPhases, seededTeams, initialInfo.participantCount);
-const seededStandings = computeStandings(seededPhases, [], seededTeams, initialInfo.participantCount);
-const seededMatches = generateMatches(seededPhases, seededTeams, initialInfo.participantCount, seededStandings);
+function buildStepValidations(info: TournamentInfo, teams: Team[], phases: Phase[], warnings: string[]): Record<SetupStep, StepValidation> {
+  const participantTeams = teams.slice(0, info.participantCount);
+  const teamsValid = participantTeams.every((team) => team.name.trim().length > 0);
+  const phasesValid = phases.length > 0;
+  const rulesValid = warnings.length === 0;
+  const seedingValid = phases
+    .filter((phase) => phase.type === "groups")
+    .every((phase) => {
+      const assignments = phase.groupAssignments ?? [];
+      return assignments.every((group) => group.length > 0);
+    });
+  return {
+    info: { valid: info.name.trim().length >= 3, message: "Enter a tournament name." },
+    participants: { valid: info.participantCount >= 2, message: "Set at least two participants." },
+    teams: { valid: teamsValid && participantTeams.length === info.participantCount, message: "Each participant slot needs a team." },
+    phases: { valid: phasesValid, message: "Add at least one phase." },
+    rules: { valid: rulesValid, message: warnings[0] ?? "Resolve invalid rules before continuing." },
+    seeding: { valid: seedingValid, message: "Every group needs seeded teams." },
+    review: { valid: rulesValid && seedingValid && teamsValid && phasesValid, message: "Complete the earlier steps first." },
+    start: { valid: rulesValid && seedingValid && teamsValid && phasesValid, message: "The tournament cannot start until the setup is valid." },
+  };
+}
+
+function recalcState(info: TournamentInfo, teams: Team[], phases: Phase[], keepMatches?: Match[]) {
+  const normalizedTeams = ensureTeamCount(teams, info.participantCount);
+  const normalizedPhases = initializePhases(phases.map(clampPhaseSettings).map(syncTieBreakers), info.participantCount, normalizedTeams);
+  const warnings = buildWarnings(info, normalizedPhases, normalizedTeams);
+  const stepValidations = buildStepValidations(info, normalizedTeams, normalizedPhases, warnings);
+  const seedStandings = computeStandings(normalizedPhases, [], normalizedTeams, info.participantCount);
+  const generatedMatches = generateMatches(normalizedPhases, normalizedTeams, info.participantCount, seedStandings);
+  const matches =
+    keepMatches && keepMatches.length > 0
+      ? generatedMatches.map((generated) => {
+          const existing = keepMatches.find((match) => match.id === generated.id);
+          return existing ? { ...generated, scoreA: existing.scoreA, scoreB: existing.scoreB, played: existing.played } : generated;
+        })
+      : generatedMatches;
+  const standings = computeStandings(normalizedPhases, matches, normalizedTeams, info.participantCount);
+  return { info, teams: normalizedTeams, phases: normalizedPhases, validationWarnings: warnings, stepValidations, matches, standings };
+}
+
+const seeded = recalcState(initialInfo, initialTeams, initialPhases);
 
 export const useTournamentStore = create<TournamentState>((set) => ({
-  info: initialInfo,
-  phases: seededPhases,
-  teams: seededTeams,
-  matches: seededMatches,
-  standings: computeStandings(seededPhases, seededMatches, seededTeams, initialInfo.participantCount),
-  currentPhaseId: seededPhases[0]?.id ?? "",
-  wizardStep: 0,
+  info: seeded.info,
+  teams: seeded.teams,
+  phases: seeded.phases,
+  matches: seeded.matches,
+  standings: seeded.standings,
+  currentPhaseId: seeded.phases[0]?.id ?? "",
+  currentStep: "info",
   hasStarted: false,
   settingsLocked: false,
-  validationWarnings: buildWarnings(initialInfo, seededPhases, seededTeams),
-  updateInfo: (payload) => set({ info: payload }),
-  setWizardStep: (step) => set({ wizardStep: step }),
+  validationWarnings: seeded.validationWarnings,
+  stepValidations: seeded.stepValidations,
+  updateInfo: (payload) => set((state) => ({ ...state, ...recalcState(payload, state.teams, state.phases, state.matches) })),
+  setCurrentStep: (step) =>
+    set((state) => {
+      const targetIndex = orderedSteps.indexOf(step);
+      const blocked = orderedSteps.slice(0, targetIndex).find((entry) => !state.stepValidations[entry].valid);
+      return { currentStep: blocked ?? step };
+    }),
+  setParticipantCount: (count) =>
+    set((state) => {
+      const info = { ...state.info, participantCount: Math.max(2, count) };
+      return { ...state, ...recalcState(info, state.teams, state.phases, state.matches) };
+    }),
+  addTeam: () =>
+    set((state) => {
+      const teams = [...state.teams, createTeam(state.teams.length)];
+      const info = { ...state.info, participantCount: teams.length };
+      return { ...state, ...recalcState(info, teams, state.phases, state.matches) };
+    }),
+  updateTeam: (teamId, updater) =>
+    set((state) => ({ ...state, ...recalcState(state.info, state.teams.map((team) => (team.id === teamId ? updater(team) : team)), state.phases, state.matches) })),
   addPhase: (type) =>
     set((state) => {
-      const phases = initializePhases([...state.phases, createDefaultPhase(type, state.phases, state.info.participantCount)], state.teams, state.info.participantCount);
-      return { phases, validationWarnings: buildWarnings(state.info, phases, state.teams) };
+      const phase = createPhase(type, state.phases, state.info.participantCount);
+      return { ...state, ...recalcState(state.info, state.teams, [...state.phases, phase], state.matches) };
     }),
   removePhase: (phaseId) =>
     set((state) => {
-      const phases = initializePhases(state.phases.filter((phase) => phase.id !== phaseId), state.teams, state.info.participantCount);
-      return {
-        phases,
-        currentPhaseId: phases[0]?.id ?? "",
-        validationWarnings: buildWarnings(state.info, phases, state.teams),
-      };
+      const phases = state.phases.filter((phase) => phase.id !== phaseId);
+      const next = recalcState(state.info, state.teams, phases, state.matches);
+      return { ...state, ...next, currentPhaseId: next.phases[0]?.id ?? "" };
     }),
   movePhase: (phaseId, direction) =>
     set((state) => {
@@ -515,43 +758,18 @@ export const useTournamentStore = create<TournamentState>((set) => ({
       if (index === -1) return state;
       const target = direction === "up" ? index - 1 : index + 1;
       if (target < 0 || target >= state.phases.length) return state;
-      const phases = initializePhases(moveItem(state.phases, index, target), state.teams, state.info.participantCount);
-      return { phases, validationWarnings: buildWarnings(state.info, phases, state.teams) };
+      return { ...state, ...recalcState(state.info, state.teams, moveItem(state.phases, index, target), state.matches) };
     }),
   updatePhaseName: (phaseId, name) =>
-    set((state) => ({
-      phases: state.phases.map((phase) => (phase.id === phaseId ? { ...phase, name } : phase)),
-    })),
+    set((state) => ({ ...state, ...recalcState(state.info, state.teams, state.phases.map((phase) => (phase.id === phaseId ? { ...phase, name } : phase)), state.matches) })),
   updatePhase: (phaseId, updater) =>
-    set((state) => {
-      const phases = initializePhases(state.phases.map((phase) => (phase.id === phaseId ? updater(phase) : phase)), state.teams, state.info.participantCount);
-      return { phases, validationWarnings: buildWarnings(state.info, phases, state.teams) };
-    }),
-  setParticipantCount: (count) =>
-    set((state) => {
-      const participantCount = Math.max(2, count);
-      const teams = ensureTeamCount(state.teams, participantCount);
-      const info = { ...state.info, participantCount };
-      const phases = initializePhases(state.phases, teams, participantCount);
-      return { info, teams, phases, validationWarnings: buildWarnings(info, phases, teams) };
-    }),
-  addTeam: () =>
-    set((state) => {
-      const teams = [...state.teams, createTeam(state.teams.length)];
-      const info = { ...state.info, participantCount: teams.length };
-      const phases = initializePhases(state.phases, teams, teams.length);
-      return { teams, info, phases, validationWarnings: buildWarnings(info, phases, teams) };
-    }),
-  updateTeam: (teamId, updater) =>
-    set((state) => ({
-      teams: state.teams.map((team) => (team.id === teamId ? updater(team) : team)),
-    })),
+    set((state) => ({ ...state, ...recalcState(state.info, state.teams, state.phases.map((phase) => (phase.id === phaseId ? updater(phase) : phase)), state.matches) })),
   randomizeGroups: (phaseId) =>
     set((state) => {
       const phases = state.phases.map((phase) =>
-        phase.id === phaseId ? { ...phase, groupAssignments: generateGroupAssignments(phase, state.teams, state.info.participantCount) } : phase,
+        phase.id === phaseId ? { ...phase, groupAssignments: generateGroupAssignments(phase, state.teams.slice(0, state.info.participantCount)) } : phase,
       );
-      return { phases, validationWarnings: buildWarnings(state.info, phases, state.teams) };
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
     }),
   moveTeamBetweenGroups: (phaseId, fromGroupIndex, teamId, direction) =>
     set((state) => {
@@ -560,26 +778,92 @@ export const useTournamentStore = create<TournamentState>((set) => ({
         const targetIndex = direction === "left" ? fromGroupIndex - 1 : fromGroupIndex + 1;
         if (targetIndex < 0 || targetIndex >= phase.groupAssignments.length) return phase;
         const assignments = phase.groupAssignments.map((group) => [...group]);
-        if (assignments[targetIndex].length >= phase.groupSettings.teamsPerGroup) return phase;
-        assignments[fromGroupIndex] = assignments[fromGroupIndex].filter((entry) => entry !== teamId);
-        assignments[targetIndex].push(teamId);
+        const fromGroup = assignments[fromGroupIndex];
+        const targetGroup = assignments[targetIndex];
+        if (!fromGroup.includes(teamId)) return phase;
+        const targetMax = Math.ceil((phase.inputTeams ?? state.info.participantCount) / phase.groupSettings.groupCount);
+        if (targetGroup.length >= targetMax) return phase;
+        assignments[fromGroupIndex] = fromGroup.filter((entry) => entry !== teamId);
+        assignments[targetIndex] = [...targetGroup, teamId];
         return { ...phase, groupAssignments: assignments };
       });
-      return { phases, validationWarnings: buildWarnings(state.info, phases, state.teams) };
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
     }),
+  addCustomColumn: (phaseId, type) =>
+    set((state) => {
+      const phases = state.phases.map((phase) => {
+        if (phase.id !== phaseId) return phase;
+        const targetColumns = phaseColumns(phase);
+        const nextColumn = createCustomColumn(type, targetColumns.length);
+        if (phase.groupSettings) return { ...phase, groupSettings: { ...phase.groupSettings, customColumns: [...phase.groupSettings.customColumns, nextColumn] } };
+        if (phase.leagueSettings) return { ...phase, leagueSettings: { ...phase.leagueSettings, customColumns: [...phase.leagueSettings.customColumns, nextColumn] } };
+        if (phase.swissSettings) return { ...phase, swissSettings: { ...phase.swissSettings, customColumns: [...phase.swissSettings.customColumns, nextColumn] } };
+        return phase;
+      });
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
+    }),
+  updateCustomColumn: (phaseId, columnId, updater) =>
+    set((state) => {
+      const phases = state.phases.map((phase) => {
+        if (phase.id !== phaseId) return phase;
+        if (phase.groupSettings) return { ...phase, groupSettings: { ...phase.groupSettings, customColumns: phase.groupSettings.customColumns.map((column) => (column.id === columnId ? updater(column) : column)) } };
+        if (phase.leagueSettings) return { ...phase, leagueSettings: { ...phase.leagueSettings, customColumns: phase.leagueSettings.customColumns.map((column) => (column.id === columnId ? updater(column) : column)) } };
+        if (phase.swissSettings) return { ...phase, swissSettings: { ...phase.swissSettings, customColumns: phase.swissSettings.customColumns.map((column) => (column.id === columnId ? updater(column) : column)) } };
+        return phase;
+      });
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
+    }),
+  removeCustomColumn: (phaseId, columnId) =>
+    set((state) => {
+      const phases = state.phases.map((phase) => {
+        if (phase.id !== phaseId) return phase;
+        if (phase.groupSettings) return { ...phase, groupSettings: { ...phase.groupSettings, customColumns: phase.groupSettings.customColumns.filter((column) => column.id !== columnId) } };
+        if (phase.leagueSettings) return { ...phase, leagueSettings: { ...phase.leagueSettings, customColumns: phase.leagueSettings.customColumns.filter((column) => column.id !== columnId) } };
+        if (phase.swissSettings) return { ...phase, swissSettings: { ...phase.swissSettings, customColumns: phase.swissSettings.customColumns.filter((column) => column.id !== columnId) } };
+        return phase;
+      });
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
+    }),
+  moveTieBreaker: (phaseId, tieBreakerId, direction) =>
+    set((state) => {
+      const phases = state.phases.map((phase) => {
+        if (phase.id !== phaseId) return phase;
+        const tieBreakers = phaseTieBreakers(phase);
+        const index = tieBreakers.findIndex((rule) => rule.id === tieBreakerId);
+        if (index === -1) return phase;
+        const target = direction === "up" ? index - 1 : index + 1;
+        if (target < 0 || target >= tieBreakers.length) return phase;
+        const nextRules = moveItem(tieBreakers, index, target);
+        if (phase.groupSettings) return { ...phase, groupSettings: { ...phase.groupSettings, tieBreakers: nextRules } };
+        if (phase.leagueSettings) return { ...phase, leagueSettings: { ...phase.leagueSettings, tieBreakers: nextRules } };
+        if (phase.swissSettings) return { ...phase, swissSettings: { ...phase.swissSettings, tieBreakers: nextRules } };
+        return phase;
+      });
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
+    }),
+  toggleTieBreaker: (phaseId, tieBreakerId) =>
+    set((state) => {
+      const phases = state.phases.map((phase) => {
+        if (phase.id !== phaseId) return phase;
+        const toggle = (rules: TieBreakerRule[]) => rules.map((rule) => (rule.id === tieBreakerId ? { ...rule, enabled: !rule.enabled } : rule));
+        if (phase.groupSettings) return { ...phase, groupSettings: { ...phase.groupSettings, tieBreakers: toggle(phase.groupSettings.tieBreakers) } };
+        if (phase.leagueSettings) return { ...phase, leagueSettings: { ...phase.leagueSettings, tieBreakers: toggle(phase.leagueSettings.tieBreakers) } };
+        if (phase.swissSettings) return { ...phase, swissSettings: { ...phase.swissSettings, tieBreakers: toggle(phase.swissSettings.tieBreakers) } };
+        return phase;
+      });
+      return { ...state, ...recalcState(state.info, state.teams, phases, state.matches) };
+    }),
+  addCustomTieBreaker: (_phaseId, _columnId) => set((state) => state),
   startTournament: () =>
     set((state) => {
-      const phases = initializePhases(state.phases, state.teams, state.info.participantCount);
-      const blankStandings = computeStandings(phases, [], state.teams, state.info.participantCount);
-      const matches = generateMatches(phases, state.teams, state.info.participantCount, blankStandings);
+      const next = recalcState(state.info, state.teams, state.phases, state.matches);
       return {
+        ...state,
+        ...next,
         hasStarted: true,
         settingsLocked: true,
-        phases,
-        matches,
-        standings: computeStandings(phases, matches, state.teams, state.info.participantCount),
-        currentPhaseId: phases[0]?.id ?? "",
-        validationWarnings: buildWarnings(state.info, phases, state.teams),
+        currentStep: "start",
+        currentPhaseId: next.phases[0]?.id ?? "",
       };
     }),
   unlockSettings: () => set({ settingsLocked: false }),
@@ -587,15 +871,7 @@ export const useTournamentStore = create<TournamentState>((set) => ({
   updateMatchScore: (matchId, scoreA, scoreB) =>
     set((state) => {
       const matches = state.matches.map((match) => (match.id === matchId ? { ...match, scoreA, scoreB, played: true } : match));
-      const standings = computeStandings(state.phases, matches, state.teams, state.info.participantCount);
-      const regenerated = generateMatches(state.phases, state.teams, state.info.participantCount, standings);
-      const updatedMatches = regenerated.map((generatedMatch) => {
-        const existing = matches.find((match) => match.id === generatedMatch.id);
-        return existing ? { ...generatedMatch, scoreA: existing.scoreA, scoreB: existing.scoreB, played: existing.played } : generatedMatch;
-      });
-      return {
-        matches: updatedMatches,
-        standings: computeStandings(state.phases, updatedMatches, state.teams, state.info.participantCount),
-      };
+      const next = recalcState(state.info, state.teams, state.phases, matches);
+      return { ...state, ...next };
     }),
 }));
