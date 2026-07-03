@@ -1,47 +1,40 @@
 import { useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Download, PencilLine, Save } from "lucide-react";
+import { AlertTriangle, Download, Lock, Save, Unlock } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useTournamentStore } from "@/store/use-tournament-store";
 
-const tabs = ["Overview", "Matches", "Standings", "Bracket", "Teams", "Statistics", "Settings"] as const;
+const tabs = ["Overview", "Matches", "Standings", "Bracket", "Teams", "Settings"] as const;
 
 export function DashboardPage() {
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
-  const { info, phases, teams, matches, standings, updateMatchScore } = useTournamentStore();
+  const { info, phases, teams, matches, standings, currentPhaseId, settingsLocked, hasStarted, unlockSettings, relockSettings, updateMatchScore } =
+    useTournamentStore();
 
-  const progress = useMemo(() => {
-    const played = matches.filter((match) => match.played).length;
-    return Math.round((played / Math.max(matches.length, 1)) * 100);
-  }, [matches]);
-
-  const teamLookup = useMemo(
-    () => Object.fromEntries(teams.map((team) => [team.id, team])),
-    [teams],
-  );
-
-  const statsData = [
-    { label: "Matches", value: matches.length },
-    { label: "Completed", value: matches.filter((match) => match.played).length },
-    { label: "Teams", value: teams.length },
-    { label: "Phases", value: phases.length },
-  ];
+  const teamLookup = useMemo(() => Object.fromEntries(teams.map((team) => [team.id, team])), [teams]);
+  const currentPhase = phases.find((phase) => phase.id === currentPhaseId) ?? phases[0];
+  const currentPhaseMatches = matches.filter((match) => match.phaseId === currentPhase?.id);
+  const currentStandings = standings.filter((row) => row.phaseId === currentPhase?.id);
+  const progress = Math.round((matches.filter((match) => match.played).length / Math.max(matches.length, 1)) * 100);
+  const knockoutPhase = phases.find((phase) => phase.type === "knockout");
+  const bracketMatches = matches.filter((match) => match.phaseId === knockoutPhase?.id);
+  const groupCount = Math.max(...currentStandings.map((row) => (row.groupIndex ?? 0) + 1), 0);
 
   return (
     <div className="space-y-6">
-      <Card className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+      <Card className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-3xl font-bold text-slate-900">{info.name}</h2>
-            <Badge tone="blue">{phases[0]?.name ?? "No phases"}</Badge>
+            <Badge tone="blue">{currentPhase?.name ?? "No active phase"}</Badge>
+            <Badge tone={settingsLocked ? "red" : "yellow"}>{settingsLocked ? "Settings locked" : "Settings unlocked"}</Badge>
           </div>
           <p className="max-w-2xl text-sm text-slate-500">{info.description}</p>
           <div>
             <div className="mb-2 flex items-center justify-between text-sm text-slate-600">
-              <span>Overall progress</span>
+              <span>Tournament progress</span>
               <span>{progress}%</span>
             </div>
             <div className="h-3 rounded-full bg-slate-100">
@@ -56,14 +49,35 @@ export function DashboardPage() {
           </Button>
           <Button variant="outline">
             <Download className="mr-2 h-4 w-4" />
-            Export JSON
+            Export
           </Button>
-          <Button variant="outline">
-            <PencilLine className="mr-2 h-4 w-4" />
-            Edit settings
-          </Button>
+          {hasStarted ? (
+            settingsLocked ? (
+              <Button variant="outline" onClick={() => unlockSettings()}>
+                <Unlock className="mr-2 h-4 w-4" />
+                Unlock settings
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => relockSettings()}>
+                <Lock className="mr-2 h-4 w-4" />
+                Relock settings
+              </Button>
+            )
+          ) : null}
         </div>
       </Card>
+
+      {!settingsLocked ? (
+        <Card className="border border-amber-200 bg-amber-50">
+          <div className="flex gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-600" />
+            <div>
+              <p className="font-semibold text-amber-900">Settings are unlocked</p>
+              <p className="mt-1 text-sm text-amber-800">Structural edits after results exist can invalidate generated matches. Relock when you are done editing.</p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {tabs.map((tab) => (
@@ -83,30 +97,28 @@ export function DashboardPage() {
       {activeTab === "Overview" ? (
         <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <Card>
-            <h3 className="text-lg font-bold text-slate-900">Competition flow</h3>
-            <div className="mt-5 flex flex-col gap-3">
+            <h3 className="text-lg font-bold text-slate-900">Current phase overview</h3>
+            <div className="mt-5 space-y-3">
               {phases.map((phase, index) => (
                 <div key={phase.id} className="rounded-xl border border-border bg-slate-50 p-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-slate-900">{phase.name}</p>
-                      <p className="text-sm text-slate-500 capitalize">{phase.type}</p>
+                      <p className="text-sm capitalize text-slate-500">{phase.type}</p>
                     </div>
-                    <Badge>{`Phase ${index + 1}`}</Badge>
+                    <Badge tone={phase.id === currentPhase?.id ? "green" : "slate"}>{`Phase ${index + 1}`}</Badge>
                   </div>
                 </div>
               ))}
             </div>
           </Card>
           <Card>
-            <h3 className="text-lg font-bold text-slate-900">High-level statistics</h3>
+            <h3 className="text-lg font-bold text-slate-900">Tournament snapshot</h3>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              {statsData.map((item) => (
-                <div key={item.label} className="rounded-xl border border-border bg-slate-50 p-4">
-                  <p className="text-sm text-slate-500">{item.label}</p>
-                  <p className="mt-2 text-2xl font-bold text-slate-900">{item.value}</p>
-                </div>
-              ))}
+              <StatCard label="Participants" value={String(info.participantCount)} />
+              <StatCard label="Phases" value={String(phases.length)} />
+              <StatCard label="Matches" value={String(matches.length)} />
+              <StatCard label="Completed" value={String(matches.filter((match) => match.played).length)} />
             </div>
           </Card>
         </div>
@@ -114,113 +126,94 @@ export function DashboardPage() {
 
       {activeTab === "Matches" ? (
         <div className="grid gap-4">
-          {matches.map((match) => {
-            const teamA = teamLookup[match.teamA];
-            const teamB = teamLookup[match.teamB];
-            return (
-              <Card key={match.id} className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="text-sm text-slate-500">{match.roundLabel}</p>
-                  <div className="mt-2 flex items-center gap-3 text-lg font-semibold text-slate-900">
-                    <span>{teamA?.name ?? "TBD"}</span>
-                    <span className="text-slate-400">vs</span>
-                    <span>{teamB?.name ?? "TBD"}</span>
+          {currentPhaseMatches.length === 0 ? (
+            <EmptyState title="No matches yet" description="Start the tournament to generate fixtures for the current phase." />
+          ) : (
+            currentPhaseMatches.map((match) => {
+              const teamA = teamLookup[match.teamA];
+              const teamB = teamLookup[match.teamB];
+              return (
+                <Card key={match.id} className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-sm text-slate-500">{match.roundLabel}</p>
+                    <div className="mt-2 flex items-center gap-3 text-lg font-semibold text-slate-900">
+                      <span>{teamA?.name ?? "BYE"}</span>
+                      <span className="text-slate-400">vs</span>
+                      <span>{teamB?.name ?? "BYE"}</span>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    className="w-20"
-                    defaultValue={match.scoreA}
-                    onChange={(event) => updateMatchScore(match.id, Number(event.target.value), match.scoreB)}
-                  />
-                  <span className="text-slate-400">:</span>
-                  <Input
-                    type="number"
-                    className="w-20"
-                    defaultValue={match.scoreB}
-                    onChange={(event) => updateMatchScore(match.id, match.scoreA, Number(event.target.value))}
-                  />
-                  <Button size="sm">Save</Button>
-                </div>
-              </Card>
-            );
-          })}
+                  <div className="flex items-center gap-2">
+                    <Input type="number" className="w-20" defaultValue={match.scoreA} onChange={(event) => updateMatchScore(match.id, Number(event.target.value), match.scoreB)} />
+                    <span className="text-slate-400">:</span>
+                    <Input type="number" className="w-20" defaultValue={match.scoreB} onChange={(event) => updateMatchScore(match.id, match.scoreA, Number(event.target.value))} />
+                    <Button size="sm" onClick={() => updateMatchScore(match.id, match.scoreA, match.scoreB)}>Save</Button>
+                  </div>
+                </Card>
+              );
+            })
+          )}
         </div>
       ) : null}
 
       {activeTab === "Standings" ? (
-        <Card className="overflow-x-auto p-0">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-slate-50 text-slate-500">
-              <tr>
-                {["Pos", "Team", "P", "W", "D", "L", "GF", "GA", "GD", "Pts"].map((head) => (
-                  <th key={head} className="px-4 py-3 font-medium">
-                    {head}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {standings.map((row, index) => {
-                const team = teamLookup[row.teamId];
-                const goalDifference = row.goalsFor - row.goalsAgainst;
-                const tone = row.status === "qualifies" ? "green" : row.status === "playoff" ? "yellow" : "red";
-                return (
-                  <tr key={row.teamId} className="border-t border-border bg-white">
-                    <td className="px-4 py-4">{index + 1}</td>
-                    <td className="px-4 py-4">
-                      <div className="flex items-center gap-3">
-                        <span className="h-8 w-8 rounded-lg" style={{ backgroundColor: team?.color }} />
-                        <span className="font-semibold text-slate-900">{team?.name}</span>
-                        <Badge tone={tone}>{row.status}</Badge>
-                      </div>
-                    </td>
-                    <td className="px-4 py-4">{row.played}</td>
-                    <td className="px-4 py-4">{row.wins}</td>
-                    <td className="px-4 py-4">{row.draws}</td>
-                    <td className="px-4 py-4">{row.losses}</td>
-                    <td className="px-4 py-4">{row.goalsFor}</td>
-                    <td className="px-4 py-4">{row.goalsAgainst}</td>
-                    <td className="px-4 py-4">{goalDifference}</td>
-                    <td className="px-4 py-4 font-semibold text-slate-900">{row.points}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </Card>
+        currentStandings.length === 0 ? (
+          <EmptyState title="No standings available" description="This phase does not produce a table yet, or matches have not been generated." />
+        ) : groupCount > 1 ? (
+          <div className="grid gap-4 xl:grid-cols-2">
+            {Array.from({ length: groupCount }, (_, groupIndex) => (
+              <StandingsTable
+                key={groupIndex}
+                title={`Group ${String.fromCharCode(65 + groupIndex)}`}
+                rows={currentStandings.filter((row) => row.groupIndex === groupIndex)}
+                teamLookup={teamLookup}
+              />
+            ))}
+          </div>
+        ) : (
+          <StandingsTable title={currentPhase?.name ?? "Standings"} rows={currentStandings} teamLookup={teamLookup} />
+        )
       ) : null}
 
       {activeTab === "Bracket" ? (
-        <div className="grid gap-4 lg:grid-cols-3">
-          {[1, 2, 3].map((round) => (
-            <Card key={round}>
-              <h3 className="text-lg font-bold text-slate-900">{round === 3 ? "Final" : `Round ${round}`}</h3>
-              <div className="mt-4 space-y-3">
-                {matches
-                  .filter((match) => match.phaseId === "phase-knockout")
-                  .map((match) => (
-                    <div key={match.id} className="rounded-xl border border-border bg-slate-50 p-4">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-slate-900">{teamLookup[match.teamA]?.name ?? "TBD"}</span>
+        knockoutPhase ? (
+          <div className="overflow-x-auto">
+            <div className="flex min-w-[720px] gap-6">
+              <div className="w-full max-w-sm space-y-4">
+                <h3 className="text-lg font-bold text-slate-900">{knockoutPhase.name}</h3>
+                {bracketMatches.map((match) => {
+                  const teamA = teamLookup[match.teamA];
+                  const teamB = teamLookup[match.teamB];
+                  const winner =
+                    match.played && match.scoreA !== match.scoreB
+                      ? match.scoreA > match.scoreB
+                        ? match.teamA
+                        : match.teamB
+                      : "";
+                  return (
+                    <div key={match.id} className="relative rounded-xl border border-border bg-white p-4 shadow-panel">
+                      <div className="absolute -right-6 top-1/2 hidden h-px w-6 bg-slate-300 lg:block" />
+                      <div className={`flex items-center justify-between rounded-lg px-3 py-2 ${winner === match.teamA ? "bg-green-50" : "bg-slate-50"}`}>
+                        <span className="font-medium text-slate-900">{teamA?.name ?? "BYE"}</span>
                         <span>{match.scoreA}</span>
                       </div>
-                      <div className="mt-2 flex items-center justify-between">
-                        <span className="font-medium text-slate-900">{teamLookup[match.teamB]?.name ?? "TBD"}</span>
+                      <div className={`mt-2 flex items-center justify-between rounded-lg px-3 py-2 ${winner === match.teamB ? "bg-green-50" : "bg-slate-50"}`}>
+                        <span className="font-medium text-slate-900">{teamB?.name ?? "BYE"}</span>
                         <span>{match.scoreB}</span>
                       </div>
                     </div>
-                  ))}
+                  );
+                })}
               </div>
-            </Card>
-          ))}
-        </div>
+            </div>
+          </div>
+        ) : (
+          <EmptyState title="No knockout bracket" description="Add a knockout phase in setup if you want a bracket view." />
+        )
       ) : null}
 
       {activeTab === "Teams" ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {teams.map((team) => (
+          {teams.slice(0, info.participantCount).map((team) => (
             <Card key={team.id}>
               <div className="flex items-center gap-3">
                 <span className="h-12 w-12 rounded-xl" style={{ backgroundColor: team.color }} />
@@ -234,47 +227,30 @@ export function DashboardPage() {
         </div>
       ) : null}
 
-      {activeTab === "Statistics" ? (
-        <Card className="h-[360px]">
-          <h3 className="text-lg font-bold text-slate-900">Tournament output</h3>
-          <div className="mt-4 h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={statsData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="label" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#1769ff" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-      ) : null}
-
       {activeTab === "Settings" ? (
         <div className="grid gap-6 xl:grid-cols-2">
           <Card className="space-y-4">
-            <h3 className="text-lg font-bold text-slate-900">Edit rules</h3>
-            <p className="text-sm text-slate-500">
-              Tournament settings stay editable. Rule changes are designed to recalculate stages and standings without reloading the app.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SettingRow label="Points system" value="3 / 1 / 0" />
-              <SettingRow label="Swiss rematches" value="Disabled" />
-              <SettingRow label="Knockout format" value="Single elimination" />
-              <SettingRow label="Third place match" value="Enabled" />
+            <h3 className="text-lg font-bold text-slate-900">Structure controls</h3>
+            <div className="grid gap-3">
+              {phases.map((phase) => (
+                <div key={phase.id} className="rounded-xl border border-border bg-slate-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-900">{phase.name}</span>
+                    <Badge>{phase.type}</Badge>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-500">{settingsLocked ? "Locked to protect existing results." : "Unlocked. Structural edits can change generated results."}</p>
+                </div>
+              ))}
             </div>
           </Card>
           <Card className="space-y-4">
-            <h3 className="text-lg font-bold text-slate-900">Local-first data</h3>
-            <p className="text-sm text-slate-500">
-              The current implementation keeps everything in local state, with room for future import, export, and backend sync layers.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SettingRow label="Storage mode" value="In-browser state" />
-              <SettingRow label="Export formats" value="JSON / CSV / tournament file" />
-              <SettingRow label="Undo support" value="Planned action history layer" />
-              <SettingRow label="Backend readiness" value="Store isolated from UI" />
+            <h3 className="text-lg font-bold text-slate-900">Safety</h3>
+            <p className="text-sm text-slate-500">Unlocking settings is explicit because changing structure after match entry may reset generated progression paths.</p>
+            <div className="rounded-xl border border-border bg-slate-50 p-4">
+              <p className="font-semibold text-slate-900">{settingsLocked ? "Locked after start" : "Unlocked for structural edits"}</p>
+              <p className="mt-1 text-sm text-slate-500">
+                {settingsLocked ? "Results entry remains available while tournament structure stays protected." : "Relock when setup is stable to avoid accidental resets."}
+              </p>
             </div>
           </Card>
         </div>
@@ -283,11 +259,75 @@ export function DashboardPage() {
   );
 }
 
-function SettingRow({ label, value }: { label: string; value: string }) {
+function StandingsTable({
+  title,
+  rows,
+  teamLookup,
+}: {
+  title: string;
+  rows: ReturnType<typeof useTournamentStore.getState>["standings"];
+  teamLookup: Record<string, ReturnType<typeof useTournamentStore.getState>["teams"][number]>;
+}) {
+  return (
+    <Card className="overflow-x-auto p-0">
+      <div className="border-b border-border px-4 py-3">
+        <h3 className="font-bold text-slate-900">{title}</h3>
+      </div>
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-slate-50 text-slate-500">
+          <tr>
+            {["Pos", "Team", "P", "W", "D", "L", "GF", "GA", "GD", "Pts"].map((head) => (
+              <th key={head} className="px-4 py-3 font-medium">
+                {head}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const team = teamLookup[row.teamId];
+            const tone = row.status === "qualifies" ? "green" : row.status === "playoff" ? "yellow" : "red";
+            return (
+              <tr key={`${row.teamId}-${row.groupIndex ?? "main"}`} className="border-t border-border bg-white">
+                <td className="px-4 py-4">{index + 1}</td>
+                <td className="px-4 py-4">
+                  <div className="flex items-center gap-3">
+                    <span className="h-8 w-8 rounded-lg" style={{ backgroundColor: team?.color }} />
+                    <span className="font-semibold text-slate-900">{team?.name}</span>
+                    <Badge tone={tone}>{row.status}</Badge>
+                  </div>
+                </td>
+                <td className="px-4 py-4">{row.played}</td>
+                <td className="px-4 py-4">{row.wins}</td>
+                <td className="px-4 py-4">{row.draws}</td>
+                <td className="px-4 py-4">{row.losses}</td>
+                <td className="px-4 py-4">{row.goalsFor}</td>
+                <td className="px-4 py-4">{row.goalsAgainst}</td>
+                <td className="px-4 py-4">{row.goalsFor - row.goalsAgainst}</td>
+                <td className="px-4 py-4 font-semibold text-slate-900">{row.points}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-border bg-slate-50 p-4">
       <p className="text-sm text-slate-500">{label}</p>
-      <p className="mt-1 font-semibold text-slate-900">{value}</p>
+      <p className="mt-2 text-2xl font-bold text-slate-900">{value}</p>
     </div>
+  );
+}
+
+function EmptyState({ title, description }: { title: string; description: string }) {
+  return (
+    <Card className="p-8 text-center">
+      <p className="text-lg font-semibold text-slate-900">{title}</p>
+      <p className="mt-2 text-sm text-slate-500">{description}</p>
+    </Card>
   );
 }

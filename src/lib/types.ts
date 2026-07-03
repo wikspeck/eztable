@@ -13,6 +13,7 @@ export interface TournamentInfo {
   name: string;
   description: string;
   logo: string;
+  participantCount: number;
 }
 
 export interface GroupSettings {
@@ -21,20 +22,25 @@ export interface GroupSettings {
   assignment: "automatic" | "manual";
   doubleRoundRobin: boolean;
   homeAway: boolean;
+  qualifiersPerGroup: number;
+  bestSecondPlaceCount: number;
+  bestThirdPlaceCount: number;
   points: {
     win: number;
     draw: number;
     loss: number;
   };
   tieBreakers: TieBreaker[];
-  qualification: string;
 }
 
 export interface SwissSettings {
   rounds: number;
   pairing: "Standard Swiss" | "Accelerated Swiss";
   noRematches: boolean;
+  allowByes: boolean;
   byeHandling: "Lowest ranked" | "Random" | "Manual";
+  points: GroupSettings["points"];
+  tieBreakers: TieBreaker[];
 }
 
 export interface LeagueSettings {
@@ -43,12 +49,15 @@ export interface LeagueSettings {
   promotion: number;
   relegation: number;
   playoffSpots: number;
+  points: GroupSettings["points"];
+  tieBreakers: TieBreaker[];
 }
 
 export interface KnockoutSettings {
   format: "Single Elimination" | "Double Elimination";
   bestOf: 1 | 3 | 5 | 7;
   thirdPlaceMatch: boolean;
+  allowByes: boolean;
   seeding: "Ranked" | "Random Draw" | "Manual";
 }
 
@@ -56,6 +65,8 @@ export interface Phase {
   id: string;
   name: string;
   type: PhaseType;
+  estimatedTeams?: number;
+  groupAssignments?: string[][];
   groupSettings?: GroupSettings;
   swissSettings?: SwissSettings;
   leagueSettings?: LeagueSettings;
@@ -74,15 +85,19 @@ export interface Match {
   id: string;
   phaseId: string;
   roundLabel: string;
+  groupIndex?: number;
   teamA: string;
   teamB: string;
   scoreA: number;
   scoreB: number;
   played: boolean;
+  isBye?: boolean;
 }
 
 export interface StandingRow {
   teamId: string;
+  phaseId?: string;
+  groupIndex?: number;
   played: number;
   wins: number;
   draws: number;
