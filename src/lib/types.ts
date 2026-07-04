@@ -1,5 +1,15 @@
 export type PhaseType = "groups" | "swiss" | "league" | "knockout";
-export type SetupStep = "info" | "participants" | "teams" | "phases" | "rules" | "seeding" | "review" | "start";
+export type SetupStep =
+  | "info"
+  | "participants"
+  | "teams"
+  | "phases"
+  | "scoring"
+  | "standings"
+  | "tiebreakers"
+  | "seeding"
+  | "review"
+  | "start";
 
 export type BuiltInTieBreakerKey =
   | "points"
@@ -20,9 +30,9 @@ export interface CustomColumn {
   name: string;
   type: CustomColumnType;
   entryMode: ColumnEntryMode;
-  affectsRanking: boolean;
+  showInStandings: boolean;
+  useAsTiebreaker: boolean;
   rankingDirection?: RankingDirection;
-  addsToPoints?: boolean;
   defaultValue?: number | string | boolean;
 }
 
@@ -124,6 +134,7 @@ export interface Match {
   scoreB: number;
   played: boolean;
   isBye?: boolean;
+  extraValues?: Record<string, CustomColumnValue>;
 }
 
 export type CustomColumnValue = number | string | boolean;

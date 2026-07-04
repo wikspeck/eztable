@@ -14,10 +14,10 @@ type StandingSeed = [
 
 export const defaultTieBreakers = (): TieBreakerRule[] => [
   { id: "tb-points", label: "Points", key: "points", enabled: true },
-  { id: "tb-goal-difference", label: "Goal difference", key: "goalDifference", enabled: true },
-  { id: "tb-goals-scored", label: "Goals scored", key: "goalsScored", enabled: true },
   { id: "tb-wins", label: "Wins", key: "wins", enabled: true },
-  { id: "tb-head-to-head", label: "Head-to-head", key: "headToHead", enabled: true },
+  { id: "tb-goal-difference", label: "Goal difference", key: "goalDifference", enabled: false },
+  { id: "tb-goals-scored", label: "Goals scored", key: "goalsScored", enabled: false },
+  { id: "tb-head-to-head", label: "Head-to-head", key: "headToHead", enabled: false },
 ];
 
 export const initialInfo: TournamentInfo = {
